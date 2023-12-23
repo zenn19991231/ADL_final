@@ -1,24 +1,52 @@
 import torch
+import json
+import random
+import argparse
 import numpy as np
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import json
-from peft import PeftModel
-import argparse
 from pathlib import Path
+from peft import PeftModel
 from transformers import BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
+def get_prompt(which_prompt, num_example, instruction: str) -> str:
 
-def get_prompt(instruction: str) -> str:
-    '''Format the instruction as a prompt for LLM.'''
-    # 0 shot
-    # return f"你是人工智慧助理，以下是用戶和人工智能助理之間的對話。你要對用戶的問題提供有用、安全、詳細和禮貌的回答。USER: {instruction} ASSISTANT:"
+    example_path = f"data/{which_prompt}/{which_prompt}_example.json"
+    with open(example_path, "r") as file:
+        example_data = json.load(file)
 
-    # 3 shot
-    return f"你是人工智慧助理，以下是用戶和人工智能助理之間的對話。你要對用戶的問題提供有用、安全、詳細和禮貌的回答。USER: 翻譯成文言文：\n於是，廢帝讓瀋慶之的堂侄、直將軍瀋攸之賜瀋慶之毒藥，命瀋慶之自殺。 ASSISTANT: 帝乃使慶之從父兄子直閣將軍攸之賜慶之藥。 USER: 文言文翻譯：\n靈鑒忽臨，忻歡交集，乃迴燈拂席以延之。 ASSISTANT: 答案：靈仙忽然光臨，趙旭歡欣交集，於是他就把燈點亮，拂拭乾淨床席來延請仙女。 USER: 希望您以後留意，不要再齣這樣的事，你的小女兒病就會好。\n這句話在古代怎麼說： ASSISTANT: 以後幸長官留意，勿令如此。 USER: {instruction} ASSISTANT:"
+    random.seed(2096)
+    example_data = random.sample(example_data, len(example_data))
 
+    promptA = "你是一個精明的偵探，現在你要幫忙審視以下訊息的真偽，你會提供重要的關鍵資訊作為依據，給每一行一則訊息作出評價，評價方式為：\“訊息真偽；可信度0~100(越高越可信)；原因。\“"
+    promptB = "以準確的關鍵資訊作為判斷依據一句話簡短描述以下每則訊息內容的真偽，並依據其真偽程度評分0到100，並依照此格式回答：真偽程度。原因。"
+    promptC = "你是詐騙偵測機器人，請評論以下訊息"
+    prefixA = "請幫忙審視以下訊息的真偽"
+    prefixB = "以準確的關鍵資訊作為判斷依據一句話簡短描述以下每則訊息內容的真偽"
+    prefixC = "你是詐騙偵測機器人，請評論以下訊息"
 
+    if which_prompt == "promptA":
+        prompt = promptA
+        prefix = prefixA
+    elif which_prompt == "promptB":
+        prompt = promptB
+        prefix = prefixB
+    elif which_prompt == "promptC":
+        prompt = promptC
+        prefix = prefixC
 
+    examples = [prompt]
+    for i in range(num_example):
+        user      = example_data[i]["instruction"]
+        assistant = example_data[i]["output"]
+        user      = f"USER: {prefix}\n{user}"
+        assistant = f"ASSISTANT: {assistant}"
+        examples.append(user)
+        examples.append(assistant)
+
+    example = f"USER: {prefix}\n{instruction} ASSISTANT: "
+    examples.append(example)
+    return " ".join(examples)
 
 def get_bnb_config() -> BitsAndBytesConfig:
     '''Get the BitsAndBytesConfig.'''
@@ -30,9 +58,6 @@ def get_bnb_config() -> BitsAndBytesConfig:
     )
     return bnb_config
 
-
-
-
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -41,12 +66,6 @@ def parse_args():
         default="",
         help="Path to the checkpoint of Taiwan-LLM-7B-v2.0-chat. If not set, this script will use "
         "the checkpoint from Huggingface (revision = 5073b2bbc1aa5519acdc865e99832857ef47f7c9)."
-    )
-    parser.add_argument(
-        "--peft_path",
-        type=str,
-        required=True,
-        help="Path to the saved PEFT checkpoint."
     )
     parser.add_argument(
         "--test_data_path",
@@ -62,6 +81,8 @@ def parse_args():
         required=True,
         help="Path to prediction."
     )
+    parser.add_argument('--device_id', type=int, default=0)
+    parser.add_argument("--which_prompt", type=str, default="promptA", required=True)
     args = parser.parse_args()
     return args
 
@@ -69,76 +90,70 @@ def keep_after_last_colon(text):
     last_colon_index = text.rfind(':')
     return text[last_colon_index + 1:].strip()
 
-def get_ready():
-    # Get model
-    bnb_config = get_bnb_config()
-    if args.base_model_path:
-        model = AutoModelForCausalLM.from_pretrained(
-            args.base_model_path,
-            torch_dtype=torch.bfloat16,
-            quantization_config=bnb_config
-        )
-        tokenizer = AutoTokenizer.from_pretrained(args.base_model_path)
-    else:
-        model_name = "yentinglin/Taiwan-LLM-7B-v2.0-chat"
-        revision = "5073b2bbc1aa5519acdc865e99832857ef47f7c9"
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            revision=revision,
-            torch_dtype=torch.bfloat16,
-            quantization_config=bnb_config
-        )
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            revision=revision,
-        )
+def get_model():
 
-    # Get tokenizer
+    torch.cuda.set_device(args.device_id)
+
+    # Get model & tokenizer
+    bnb_config = get_bnb_config()
+    model = AutoModelForCausalLM.from_pretrained(
+        args.base_model_path,
+        torch_dtype=torch.bfloat16,
+        quantization_config=bnb_config
+    )
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model_path)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
+    return model, tokenizer
 
-    # Get LoRA
-    model = PeftModel.from_pretrained(model, args.peft_path)
-
-    # Get data
+def get_data(shots):
+    # Prepare data
     with open(args.test_data_path, "r") as f:
         data = json.load(f)
-    
-    return model, tokenizer, data
+    for message_item in data:
+        message_item['prediction'] = {}
+    return data
 
-def generate_predictions(model, tokenizer, data, max_length=2048):
+def generate_predictions(shots, model, tokenizer, data, max_length=2048):
     model.eval()
 
-    # Tokenize data
-    instructions = [get_prompt(x["instruction"]) for x in data]
-    tokenized_instructions = tokenizer(instructions, add_special_tokens=False)
+    for num_example in shots:
+        key = f"{num_example}_shot"
 
-    prediction_output = []
-    for i in tqdm(range(len(data))):
-        input_ids = [tokenizer.bos_token_id] + tokenized_instructions["input_ids"][i]
-        input_ids = torch.tensor(input_ids[:max_length]).unsqueeze(0)
+        # Tokenize data
+        instructions = [get_prompt(args.which_prompt, num_example, x["instruction"]) for x in data]
+        tokenized_instructions = tokenizer(instructions, add_special_tokens=False)
 
-        with torch.no_grad():
-            prediction = model.generate(
-                input_ids=input_ids,
-                max_length=max_length,
-                temperature=0.75
-            )
-            prediction = tokenizer.batch_decode(prediction, skip_special_tokens=True)
-            prediction = keep_after_last_colon(prediction[0])
-            prediction_output.append({
-                "id":data[i]["id"],
-                "output":prediction
-            })
+        # Generate prediction
+        for i in tqdm(range(len(data))):
+            input_ids = [tokenizer.bos_token_id] + tokenized_instructions["input_ids"][i]
+            input_ids = torch.tensor(input_ids[:max_length]).unsqueeze(0)
 
+            with torch.no_grad():
+                prediction = model.generate(
+                    input_ids=input_ids,
+                    max_length=max_length,
+                    temperature=0.75
+                )
+                prediction = tokenizer.batch_decode(prediction, skip_special_tokens=True)
+                prediction = keep_after_last_colon(prediction[0])
+                data[i]["prediction"][key] = prediction
+    return data
+
+def output_data(data):
     args.prediction_path.parent.mkdir(parents=True, exist_ok=True)
     with open(args.prediction_path, "w", encoding="utf8") as f:
-        json.dump(prediction_output, f, indent=2, ensure_ascii=False)
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    
-    model, tokenizer, data = get_ready()
-    
-    generate_predictions(model, tokenizer, data)
+
+    shots = [0, 1, 2, 3, 4, 8, 12, 16, 20]
+
+    args             = parse_args()
+    model, tokenizer = get_model()
+    data             = get_data(shots)
+
+    data = generate_predictions(shots, model, tokenizer, data)
+
+    output_data(data)
