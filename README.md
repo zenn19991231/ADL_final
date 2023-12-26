@@ -17,7 +17,7 @@ python ./src/Demo.py
 ## 執行predict.py
 chose PromptA, PromptB, PromptC for {which_propt}
 ```
-python3           "predict.py" \
+python3           "./src/predict.py" \
 --base_model_path  "/home/adl/Desktop/ADL_final/model/Taiwan-LLM-7B-v2.0-chat" \
 --test_data_path   "data/{which_prompt}/{which_prompt}_combine.json" \
 --prediction_path  "data/{which_prompt}/{which_prompt}_predict.json" \
