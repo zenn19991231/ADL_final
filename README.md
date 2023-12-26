@@ -1,4 +1,5 @@
-# ADL 2023 Fall final project | Fraudulent SMS Detection utilizing Prompting on Taiwan-LLM
+# ADL 2023 Fall final project 
+# Fraudulent SMS Detection utilizing Prompting on Taiwan-LLM
 
 ## 詐騙簡訊偵測Demo
 ```
